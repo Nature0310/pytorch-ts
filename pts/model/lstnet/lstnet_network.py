@@ -65,8 +65,7 @@ class LSTNetBase(nn.Module):
             "LSTM",
         ], "`skip_rnn_cell_type` must be either 'GRU' or 'LSTM' "
 
-        
-        self.conv_out = context_length - kernel_size 
+        self.conv_out = context_length - kernel_size
         self.conv_skip = self.conv_out // skip_size
         assert self.conv_skip > 0, (
             "conv1d output size must be greater than or equal to `skip_size`\n"
@@ -82,20 +81,25 @@ class LSTNetBase(nn.Module):
 
         rnn = {"LSTM": nn.LSTM, "GRU": nn.GRU}[rnn_cell_type]
         self.rnn = rnn(
-            input_size=channels, 
-            hidden_size=rnn_num_cells, 
-            #dropout=dropout_rate,
+            input_size=channels,
+            hidden_size=rnn_num_cells,
+            # dropout=dropout_rate,
         )
 
         skip_rnn = {"LSTM": nn.LSTM, "GRU": nn.GRU}[skip_rnn_cell_type]
         self.skip_rnn_num_cells = skip_rnn_num_cells
         self.skip_rnn = skip_rnn(
-            input_size=channels,  
+            input_size=channels,
             hidden_size=skip_rnn_num_cells,
-            #dropout=dropout_rate,
+            # dropout=dropout_rate,
         )
 
-        # self.fc = nn.Linear()
+        self.fc = nn.Linear(rnn_num_cells + skip_size * skip_rnn_num_cells, num_series)
+
+        if self.horizon:
+            self.ar_fc = nn.Linear(ar_window, 1)
+        else:
+            self.ar_fc = nn.Linear(ar_window, prediction_length)
 
         if scaling:
             self.scaler = MeanScaler(keepdim=True)
@@ -106,33 +110,50 @@ class LSTNetBase(nn.Module):
         self, past_target: torch.Tensor, past_observed_values: torch.Tensor
     ) -> torch.Tensor:
         scaled_past_target, _ = self.scaler(
-            past_target[:, -self.context_length :,...],
-            past_observed_values[:, -self.context_length :,...],
+            past_target[:, -self.context_length :, ...],
+            past_observed_values[:, -self.context_length :, ...],
         )
 
         # CNN
         c = F.relu(self.cnn(scaled_past_target.unsqueeze(1)))
         c = self.dropout(c)
-        c = c.squeeze() # [B, channels, T]
+        c = c.squeeze()  # [B, channels, T]
 
         # RNN
-        r = c.permute(2, 0, 1) # [F (T), B, channels] 
-        _, r = self.rnn(r) # [1, B, ]
+        r = c.permute(2, 0, 1)  # [F (T), B, channels]
+        _, r = self.rnn(r)  # [1, B, ]
         r = self.dropout(r.squeeze())
 
         # Skip-RNN
-        skip_c = c[...,-self.conv_skip*self.skip_size:]
+        skip_c = c[..., -self.conv_skip * self.skip_size :]
         skip_c = skip_c.reshape(-1, self.channels, self.conv_skip, self.skip_size)
-        skip_c = skip_c.permute(2,0,3,1)
+        skip_c = skip_c.permute(2, 0, 3, 1)
         skip_c = skip_c.reshape((self.conv_skip, -1, self.channels))
         _, skip_c = self.skip_rnn(skip_c)
-        skip_c = skip_c.reshape((-1, self.skip_size*self.skip_rnn_num_cells))
+        skip_c = skip_c.reshape((-1, self.skip_size * self.skip_rnn_num_cells))
         skip_c = self.dropout(skip_c)
 
-        r = torch.cat((r, skip_c), 1)
-        import pdb
+        res = self.fc(torch.cat((r, skip_c), 1)).unsqueeze(-1)
 
-        pdb.set_trace()
+        # Highway
+        ar_x = scaled_past_target[:, -self.ar_window :, :]
+        ar_x = ar_x.permute(0, 2, 1).reshape(-1, self.ar_window)
+
+        ar_x = self.ar_fc(ar_x)
+        if self.horizon:
+            ar_x = ar_x.reshape(-1, self.num_series, 1)
+        else:
+            ar_x = ar_x.reshape(-1, self.num_series, self.prediction_length)
+        out = res + ar_x
+
+        if self.output_activation is None:
+            return out
+
+        return (
+            torch.sigmoid(out)
+            if self.output_activation == "sigmoid"
+            else torch.tanh(out)
+        )
 
 
 class LSTNetTrain(LSTNetBase):

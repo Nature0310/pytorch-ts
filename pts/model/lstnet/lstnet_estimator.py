@@ -81,7 +81,7 @@ class LSTNetEstimator(PTSEstimator):
                     time_series_fields=[FieldName.OBSERVED_VALUES],
                     past_length=self.context_length,
                     future_length=self.future_length,
-                    batch_first=True, 
+                    batch_first=False, 
                 ),
             ]
         )

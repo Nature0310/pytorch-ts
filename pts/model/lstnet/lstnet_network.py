@@ -74,7 +74,7 @@ class LSTNetBase(nn.Module):
         self.skip_rnn_c_dim = channels * skip_size
 
         self.cnn = nn.Conv2d(
-            in_channels=1, out_channels=channels, kernel_size=(kernel_size, num_series)
+            in_channels=1, out_channels=channels, kernel_size=(num_series, kernel_size)
         )
 
         self.dropout = nn.Dropout(p=dropout_rate)
@@ -110,9 +110,9 @@ class LSTNetBase(nn.Module):
         self, past_target: torch.Tensor, past_observed_values: torch.Tensor
     ) -> torch.Tensor:
         scaled_past_target, _ = self.scaler(
-            past_target[:, -self.context_length :, ...],
-            past_observed_values[:, -self.context_length :, ...],
-        )
+            past_target[..., -self.context_length :],
+            past_observed_values[..., -self.context_length :],
+        ) # [B, N, T]
 
         # CNN
         c = F.relu(self.cnn(scaled_past_target.unsqueeze(1)))
@@ -136,8 +136,8 @@ class LSTNetBase(nn.Module):
         res = self.fc(torch.cat((r, skip_c), 1)).unsqueeze(-1)
 
         # Highway
-        ar_x = scaled_past_target[:, -self.ar_window :, :]
-        ar_x = ar_x.permute(0, 2, 1).reshape(-1, self.ar_window)
+        ar_x = scaled_past_target[..., -self.ar_window :]
+        ar_x = ar_x.reshape(-1, self.ar_window)
 
         ar_x = self.ar_fc(ar_x)
         if self.horizon:
@@ -171,6 +171,7 @@ class LSTNetTrain(LSTNetBase):
 
         if self.horizon:
             future_target = future_target[..., -1:]
+        
         loss = self.loss_fn(ret, future_target)
         return loss
 

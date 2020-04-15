@@ -1,21 +1,23 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from pts.modules import MeanScaler, NOPScaler
 
-class LSTNetBase(nn.module):
+
+class LSTNetBase(nn.Module):
     def __init__(
         self,
         num_series: int,
         channels: int,
         kernel_size: int,
         rnn_cell_type: str,
-        rnn_num_layers: int,
+        rnn_num_cells: int,
         skip_rnn_cell_type: str,
-        skip_rnn_num_layers: int,
+        skip_rnn_num_cells: int,
         skip_size: int,
         ar_window: int,
         context_length: int,
@@ -24,9 +26,10 @@ class LSTNetBase(nn.module):
         dropout_rate: float,
         output_activation: Optional[str],
         scaling: bool,
+        *args,
         **kwargs,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(*args, **kwargs)
 
         self.num_series = num_series
         self.channels = channels
@@ -61,44 +64,100 @@ class LSTNetBase(nn.module):
             "GRU",
             "LSTM",
         ], "`skip_rnn_cell_type` must be either 'GRU' or 'LSTM' "
-        self.conv_out = context_length - kernel_size + 1
-        conv_skip = self.conv_out // skip_size
-        assert conv_skip > 0, (
+
+        
+        self.conv_out = context_length - kernel_size 
+        self.conv_skip = self.conv_out // skip_size
+        assert self.conv_skip > 0, (
             "conv1d output size must be greater than or equal to `skip_size`\n"
             "Choose a smaller `kernel_size` or bigger `context_length`"
         )
-        self.channel_skip_count = conv_skip * skip_size
         self.skip_rnn_c_dim = channels * skip_size
 
-        self.cnn = nn.Conv1d(
-            in_channels=num_series, out_channels=channels, kernel_size=kernel_size,
-        )
-        rnn = {"LSTM": nn.LSTM, "GRU": nn.GRU}[rnn_cell_type]
-        self.rnn = rnn(
-            input_size=input_size, ## ??
-            hidden_size=channels,
-            num_layers=rnn_num_layers,
-            dropout=dropout_rate,
-            batch_first=False,
+        self.cnn = nn.Conv2d(
+            in_channels=1, out_channels=channels, kernel_size=(kernel_size, num_series)
         )
 
         self.dropout = nn.Dropout(p=dropout_rate)
 
-        skip_rnn = {"LSTM": nn.LSTM, "GRU": nn.GRU}[skip_rnn_cell_type]
-        self.skip_rnn = skip_rnn(
-            input_size=input_size, ## ??
-            hidden_size=channels,
-            num_layers=skip_rnn_num_layers,
-            dropout=dropout_rate,
-            batch_first=False,
+        rnn = {"LSTM": nn.LSTM, "GRU": nn.GRU}[rnn_cell_type]
+        self.rnn = rnn(
+            input_size=channels, 
+            hidden_size=rnn_num_cells, 
+            #dropout=dropout_rate,
         )
 
-        self.fc = nn.Linear()
+        skip_rnn = {"LSTM": nn.LSTM, "GRU": nn.GRU}[skip_rnn_cell_type]
+        self.skip_rnn_num_cells = skip_rnn_num_cells
+        self.skip_rnn = skip_rnn(
+            input_size=channels,  
+            hidden_size=skip_rnn_num_cells,
+            #dropout=dropout_rate,
+        )
+
+        # self.fc = nn.Linear()
+
+        if scaling:
+            self.scaler = MeanScaler(keepdim=True)
+        else:
+            self.scaler = NOPScaler(keepdim=True)
+
+    def forward(
+        self, past_target: torch.Tensor, past_observed_values: torch.Tensor
+    ) -> torch.Tensor:
+        scaled_past_target, _ = self.scaler(
+            past_target[:, -self.context_length :,...],
+            past_observed_values[:, -self.context_length :,...],
+        )
+
+        # CNN
+        c = F.relu(self.cnn(scaled_past_target.unsqueeze(1)))
+        c = self.dropout(c)
+        c = c.squeeze() # [B, channels, T]
+
+        # RNN
+        r = c.permute(2, 0, 1) # [F (T), B, channels] 
+        _, r = self.rnn(r) # [1, B, ]
+        r = self.dropout(r.squeeze())
+
+        # Skip-RNN
+        skip_c = c[...,-self.conv_skip*self.skip_size:]
+        skip_c = skip_c.reshape(-1, self.channels, self.conv_skip, self.skip_size)
+        skip_c = skip_c.permute(2,0,3,1)
+        skip_c = skip_c.reshape((self.conv_skip, -1, self.channels))
+        _, skip_c = self.skip_rnn(skip_c)
+        skip_c = skip_c.reshape((-1, self.skip_size*self.skip_rnn_num_cells))
+        skip_c = self.dropout(skip_c)
+
+        r = torch.cat((r, skip_c), 1)
+        import pdb
+
+        pdb.set_trace()
 
 
 class LSTNetTrain(LSTNetBase):
-    pass
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.loss_fn = nn.L1Loss()
+
+    def forward(
+        self,
+        past_target: torch.Tensor,
+        past_observed_values: torch.Tensor,
+        future_target: torch.Tensor,
+    ) -> torch.Tensor:
+        ret = super().forward(past_target, past_observed_values)
+
+        if self.horizon:
+            future_target = future_target[..., -1:]
+        loss = self.loss_fn(ret, future_target)
+        return loss
 
 
 class LSTNetPredict(LSTNetBase):
-    pass
+    def forward(
+        self, past_target: torch.Tensor, past_observed_values: torch.Tensor
+    ) -> torch.Tensor:
+        ret = super().forward(past_target, past_observed_values)
+
+        return ret.unsqueeze(1)

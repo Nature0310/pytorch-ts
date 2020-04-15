@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -34,9 +35,9 @@ class LSTNetEstimator(PTSEstimator):
         dropout_rate: Optional[float] = 0.2,
         output_activation: Optional[str] = None,
         rnn_cell_type: str = "GRU",
-        rnn_num_layers: int = 10,
+        rnn_num_cells: int = 10,
         skip_rnn_cell_type: str = "GRU",
-        skip_rnn_num_layers: int = 5,
+        skip_rnn_num_cells: int = 5,
         scaling: bool = True,
         dtype: np.dtype = np.float32,
     ):
@@ -56,9 +57,9 @@ class LSTNetEstimator(PTSEstimator):
         self.dropout_rate = dropout_rate
         self.output_activation = output_activation
         self.rnn_cell_type = rnn_cell_type
-        self.rnn_num_layers = rnn_num_layers
+        self.rnn_num_cells = rnn_num_cells
         self.skip_rnn_cell_type = skip_rnn_cell_type
-        self.skip_rnn_num_layers = skip_rnn_num_layers
+        self.skip_rnn_num_cells = skip_rnn_num_cells
         self.scaling = scaling
         self.dtype = dtype
 
@@ -80,7 +81,7 @@ class LSTNetEstimator(PTSEstimator):
                     time_series_fields=[FieldName.OBSERVED_VALUES],
                     past_length=self.context_length,
                     future_length=self.future_length,
-                    batch_first=False,  # output NCT for first layer conv1d
+                    batch_first=True, 
                 ),
             ]
         )
@@ -91,9 +92,9 @@ class LSTNetEstimator(PTSEstimator):
             channels=self.channels,
             kernel_size=self.kernel_size,
             rnn_cell_type=self.rnn_cell_type,
-            rnn_num_layers=self.rnn_num_layers,
+            rnn_num_cells=self.rnn_num_cells,
             skip_rnn_cell_type=self.skip_rnn_cell_type,
-            skip_rnn_num_layers=self.skip_rnn_num_layers,
+            skip_rnn_num_cells=self.skip_rnn_num_cells,
             skip_size=self.skip_size,
             ar_window=self.ar_window,
             context_length=self.context_length,
@@ -115,9 +116,9 @@ class LSTNetEstimator(PTSEstimator):
             channels=self.channels,
             kernel_size=self.kernel_size,
             rnn_cell_type=self.rnn_cell_type,
-            rnn_num_layers=self.rnn_num_layers,
+            rnn_num_cells=self.rnn_num_cells,
             skip_rnn_cell_type=self.skip_rnn_cell_type,
-            skip_rnn_num_layers=self.skip_rnn_num_layers,
+            skip_rnn_num_cells=self.skip_rnn_num_cells,
             skip_size=self.skip_size,
             ar_window=self.ar_window,
             context_length=self.context_length,

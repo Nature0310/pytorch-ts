@@ -181,5 +181,6 @@ class LSTNetPredict(LSTNetBase):
         self, past_target: torch.Tensor, past_observed_values: torch.Tensor
     ) -> torch.Tensor:
         ret = super().forward(past_target, past_observed_values)
+        ret = ret.permute(0,2,1)
 
         return ret.unsqueeze(1)

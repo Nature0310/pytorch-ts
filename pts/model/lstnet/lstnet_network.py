@@ -102,31 +102,27 @@ class LSTNetBase(nn.Module):
             self.ar_fc = nn.Linear(ar_window, prediction_length)
 
         if scaling:
-            self.scaler = MeanScaler(keepdim=True)
+            self.scaler = MeanScaler(keepdim=True, time_first=False)
         else:
-            self.scaler = NOPScaler(keepdim=True)
+            self.scaler = NOPScaler(keepdim=True, time_first=False)
 
     def forward(
         self, past_target: torch.Tensor, past_observed_values: torch.Tensor
     ) -> torch.Tensor:
         scaled_past_target, scale = self.scaler(
-            past_target[..., -self.context_length :].permute(0, 2, 1),  # [B, T, C]
-            past_observed_values[..., -self.context_length :].permute(
-                0, 2, 1
-            ),  # [B, T, C]
+            past_target[..., -self.context_length :],  # [B, C, T]
+            past_observed_values[..., -self.context_length :]  # [B, C, T]
         )
-        scaled_past_target = scaled_past_target.permute(0, 2, 1)
-        scale = scale.permute(0, 2, 1)
 
         # CNN
         c = F.relu(self.cnn(scaled_past_target.unsqueeze(1)))
         c = self.dropout(c)
-        c = c.squeeze()  # [B, channels, T]
+        c = c.squeeze()  # [B, C, T]
 
         # RNN
-        r = c.permute(2, 0, 1)  # [F (T), B, channels]
-        _, r = self.rnn(r)  # [1, B, ]
-        r = self.dropout(r.squeeze())
+        r = c.permute(2, 0, 1)  # [F (T), B, C]
+        _, r = self.rnn(r)  # [1, B, H]
+        r = self.dropout(r.squeeze()) # [B, H]
 
         # Skip-RNN
         skip_c = c[..., -self.conv_skip * self.skip_size :]

@@ -109,10 +109,14 @@ class LSTNetBase(nn.Module):
     def forward(
         self, past_target: torch.Tensor, past_observed_values: torch.Tensor
     ) -> torch.Tensor:
-        scaled_past_target, _ = self.scaler(
-            past_target[..., -self.context_length :],
-            past_observed_values[..., -self.context_length :],
-        ) # [B, N, T]
+        scaled_past_target, scale = self.scaler(
+            past_target[..., -self.context_length :].permute(0, 2, 1),  # [B, T, C]
+            past_observed_values[..., -self.context_length :].permute(
+                0, 2, 1
+            ),  # [B, T, C]
+        )
+        scaled_past_target = scaled_past_target.permute(0, 2, 1)
+        scale = scale.permute(0, 2, 1)
 
         # CNN
         c = F.relu(self.cnn(scaled_past_target.unsqueeze(1)))
@@ -147,12 +151,15 @@ class LSTNetBase(nn.Module):
         out = res + ar_x
 
         if self.output_activation is None:
-            return out
+            return out, scale
 
         return (
-            torch.sigmoid(out)
-            if self.output_activation == "sigmoid"
-            else torch.tanh(out)
+            (
+                torch.sigmoid(out)
+                if self.output_activation == "sigmoid"
+                else torch.tanh(out)
+            ),
+            scale,
         )
 
 
@@ -167,12 +174,12 @@ class LSTNetTrain(LSTNetBase):
         past_observed_values: torch.Tensor,
         future_target: torch.Tensor,
     ) -> torch.Tensor:
-        ret = super().forward(past_target, past_observed_values)
+        ret, scale = super().forward(past_target, past_observed_values)
 
         if self.horizon:
             future_target = future_target[..., -1:]
-        
-        loss = self.loss_fn(ret, future_target)
+
+        loss = self.loss_fn(ret*scale, future_target)
         return loss
 
 
@@ -180,7 +187,7 @@ class LSTNetPredict(LSTNetBase):
     def forward(
         self, past_target: torch.Tensor, past_observed_values: torch.Tensor
     ) -> torch.Tensor:
-        ret = super().forward(past_target, past_observed_values)
-        ret = ret.permute(0,2,1)
+        ret, scale = super().forward(past_target, past_observed_values)
+        ret = (ret*scale).permute(0, 2, 1)
 
         return ret.unsqueeze(1)
